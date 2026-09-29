@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 만능 채점기</title>
+    <style>
+        /* 심플한 블랙 테마 CSS */
+        body { margin: 0; font-family: 'Pretendard', sans-serif; background-color: #121212; color: #ffffff; display: flex; height: 100vh; overflow: hidden; }
+        .panel { padding: 30px; overflow-y: auto; box-sizing: border-box; }
+        .left-panel { width: 60%; border-right: 1px solid #333; }
+        .right-panel { width: 40%; background-color: #1a1a1a; }
+        
+        h1, h2 { margin-top: 0; color: #e0e0e0; }
+        .control-group { margin-bottom: 20px; background: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; }
+        
+        label { display: block; margin-bottom: 8px; font-size: 14px; color: #aaa; }
+        input[type="file"], input[type="password"], select, button { width: 100%; padding: 12px; margin-bottom: 10px; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 5px; font-size: 15px; box-sizing: border-box; }
+        input[type="password"] { border: 1px solid #007bff; } /* 키 입력칸 강조 */
+        input[type="password"]:focus { outline: none; border-color: #4ade80; }
+        
+        button { background: #ffffff; color: #000000; font-weight: bold; cursor: pointer; transition: 0.2s; border: none; margin-top: 10px; }
+        button:hover { background: #cccccc; }
+        button:disabled { background: #555; color: #888; cursor: not-allowed; }
+        
+        /* OMR 스타일 */
+        #omr-container { margin-top: 20px; display: none; }
+        .omr-row { display: flex; align-items: center; justify-content: space-between; background: #1e1e1e; padding: 10px 15px; margin-bottom: 8px; border-radius: 5px; border: 1px solid #333; }
+        .omr-num { font-weight: bold; width: 40px; }
+        .omr-options { display: flex; gap: 15px; }
+        .omr-options label { margin: 0; cursor: pointer; display: flex; align-items: center; gap: 5px; color: #ddd; font-size: 16px; }
+        
+        /* 채점 결과 스타일 */
+        #result-box { display: none; }
+        .score-display { font-size: 48px; font-weight: bold; text-align: center; margin: 20px 0; color: #4ade80; }
+        .wrong-list { list-style: none; padding: 0; }
+        .wrong-item { background: #2a2a2a; padding: 15px; margin-bottom: 10px; border-left: 4px solid #ef4444; border-radius: 4px; }
+        .wrong-item span { color: #aaa; font-size: 13px; display: block; margin-top: 5px; }
+        
+        .loading { text-align: center; color: #aaa; font-style: italic; display: none; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<!-- 왼쪽: 설정 및 OMR 입력 패널 -->
+<div class="panel left-panel">
+    <h1>📝 AI 만능 시험 채점기</h1>
+    
+    <div class="control-group">
+        <label style="color: #4ade80; font-weight: bold;">🔑 1. 열쇠(Gemini API 키) 입력</label>
+        <input type="password" id="api-key-input" placeholder="발급받은 AQ... 형태의 키를 붙여넣으세요">
+    </div>
+
+    <div class="control-group">
+        <label>2. 시험지 또는 정답지 사진 업로드</label>
+        <input type="file" id="image-upload" accept="image/*">
+        
+        <label style="margin-top: 15px;">3. 과목 (태그) 선택</label>
+        <select id="subject-select">
+            <option value="math">수학 (정확한 정답 비교)</option>
+            <option value="english">영어 (유의어/동의어 허용)</option>
+            <option value="science">과학 (정확한 정답 비교)</option>
+            <option value="korean">국어 (문맥 및 정답 비교)</option>
+            <option value="other">기타 과목</option>
+        </select>
+        
+        <button id="analyze-btn" onclick="analyzeImage()">사진 분석하여 OMR 생성하기</button>
+        <div id="loading-analyze" class="loading">AI가 사진의 문항 수를 분석 중입니다...</div>
+    </div>
+
+    <div id="omr-container">
+        <h2>✅ OMR 답안 입력</h2>
+        <p style="color: #aaa; font-size: 14px;">본인이 푼 답안을 체크해주세요.</p>
+        <div id="omr-list"></div>
+        <button id="submit-btn" onclick="gradeExam()">제출 및 채점하기</button>
+        <div id="loading-grade" class="loading">AI가 채점을 진행 중입니다... (약 10초 소요)</div>
+    </div>
+</div>
+
+<!-- 오른쪽: 채점 결과 패널 -->
+<div class="panel right-panel">
+    <h2>📊 채점 결과</h2>
+    <div id="result-box">
+        <div class="score-display" id="final-score">100점</div>
+        <h3 style="border-bottom: 1px solid #444; padding-bottom: 10px; margin-top: 30px;">오답 노트</h3>
+        <ul class="wrong-list" id="wrong-list">
+            <!-- 오답 리스트가 여기에 들어갑니다 -->
+        </ul>
+    </div>
+    <div id="empty-result" style="color: #777; text-align: center; margin-top: 50px;">
+        답안을 제출하면 이곳에 채점 결과가 표시됩니다.
+    </div>
+</div>
+
+<script>
+    let base64Image = "";
+    let totalQuestions = 0;
+
+    // API 키 가져오기 함수 (입력창 검사)
+    function getApiKey() {
+        const key = document.getElementById('api-key-input').value.trim();
+        if (!key) {
+            alert("🔑 맨 위에 Gemini API 키를 먼저 입력해주세요!");
+            return null;
+        }
+        return key;
+    }
+
+    // 이미지 업로드 시 Base64로 변환
+    document.getElementById('image-upload').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            base64Image = event.target.result.split(',')[1];
+        };
+        reader.readAsDataURL(file);
+    });
+
+    // 1단계: 이미지 분석해서 문항 수 알아내기
+    async function analyzeImage() {
+        const apiKey = getApiKey();
+        if (!apiKey) return; // 키가 없으면 중단
+
+        if (!base64Image) return alert("먼저 시험지 사진을 업로드해주세요!");
+        
+        document.getElementById('analyze-btn').disabled = true;
+        document.getElementById('loading-analyze').style.display = 'block';
+
+        const prompt = "첨부된 시험지나 정답지 사진을 분석해서, 총 문제(문항) 수가 몇 개인지 숫자로만 파악해줘. 응답은 반드시 마크다운 없이 순수 JSON 형식으로만 보내줘. 예시: {\"total\": 20}";
+
+        try {
+            const response = await callGeminiAPI(prompt, base64Image, apiKey);
+            const jsonData = parseJSON(response);
+            
+            if (jsonData && jsonData.total) {
+                totalQuestions = jsonData.total;
+                generateOMR(totalQuestions);
+            } else {
+                alert("문항 수를 파악하지 못했습니다. 사진을 다시 확인해주세요.");
+            }
+        } catch (error) {
+            alert("분석 중 오류가 발생했습니다. API 키가 정확한지 확인해주세요.");
+            console.error(error);
+        } finally {
+            document.getElementById('analyze-btn').disabled = false;
+            document.getElementById('loading-analyze').style.display = 'none';
+        }
+    }
+
+    // OMR UI 동적 생성
+    function generateOMR(count) {
+        const omrList = document.getElementById('omr-list');
+        omrList.innerHTML = '';
+        
+        for (let i = 1; i <= count; i++) {
+            const row = document.createElement('div');
+            row.className = 'omr-row';
+            row.innerHTML = `
+                <div class="omr-num">${i}번</div>
+                <div class="omr-options">
+                    <label><input type="radio" name="q${i}" value="1"> 1</label>
+                    <label><input type="radio" name="q${i}" value="2"> 2</label>
+                    <label><input type="radio" name="q${i}" value="3"> 3</label>
+                    <label><input type="radio" name="q${i}" value="4"> 4</label>
+                    <label><input type="radio" name="q${i}" value="5"> 5</label>
+                </div>
+            `;
+            omrList.appendChild(row);
+        }
+        document.getElementById('omr-container').style.display = 'block';
+    }
+
+    // 2단계: 답안 제출 및 AI 채점
+    async function gradeExam() {
+        const apiKey = getApiKey();
+        if (!apiKey) return; // 키가 없으면 중단
+
+        const subject = document.getElementById('subject-select').value;
+        const userAnswers = {};
+        
+        // 사용자가 선택한 OMR 답안 수집
+        for (let i = 1; i <= totalQuestions; i++) {
+            const checked = document.querySelector(`input[name="q${i}"]:checked`);
+            userAnswers[i] = checked ? checked.value : "미입력";
+        }
+
+        document.getElementById('submit-btn').disabled = true;
+        document.getElementById('loading-grade').style.display = 'block';
+        document.getElementById('empty-result').style.display = 'none';
+        document.getElementById('result-box').style.display = 'none';
+
+        // 과목별 특수 프롬프트 생성
+        let ruleInstruction = "";
+        if (subject === "english") {
+            ruleInstruction = "영어 과목입니다. 순서에 상관없이 단어의 유사어나 동의어를 사용했거나 문맥상 정답과 의미가 같다면 정답으로 처리해주세요.";
+        } else {
+            ruleInstruction = "사진의 정답표와 사용자가 입력한 답을 비교하여 정확히 일치하는지 확인해주세요.";
+        }
+
+        const prompt = `
+            당신은 만능 채점관입니다. 사진 속 정답을 기준으로 아래 사용자의 답안을 채점해주세요.
+            [채점 규칙]: ${ruleInstruction}
+            [사용자 제출 답안]: ${JSON.stringify(userAnswers)}
+            
+            응답은 반드시 마크다운 없이 순수 JSON 형식으로만 작성하세요.
+            형식 예시:
+            {
+                "score": 85,
+                "wrong_answers": [
+                    {"num": 1, "user_answer": "2", "correct_answer": "4", "reason": "정답은 4번입니다."},
+                    {"num": 5, "user_answer": "미입력", "correct_answer": "3", "reason": "답을 입력하지 않았습니다."}
+                ]
+            }
+        `;
+
+        try {
+            const response = await callGeminiAPI(prompt, base64Image, apiKey);
+            const resultData = parseJSON(response);
+            
+            if (resultData) {
+                displayResult(resultData);
+            } else {
+                alert("채점 결과를 불러오지 못했습니다. 다시 시도해주세요.");
+            }
+        } catch (error) {
+            alert("채점 중 오류가 발생했습니다. API 키가 올바른지 확인해주세요.");
+            console.error(error);
+        } finally {
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('loading-grade').style.display = 'none';
+        }
+    }
+
+    // 채점 결과 화면에 표시
+    function displayResult(data) {
+        document.getElementById('result-box').style.display = 'block';
+        
+        // 점수 표시 (틀린 개수에 따라 계산)
+        const correctCount = totalQuestions - (data.wrong_answers ? data.wrong_answers.length : 0);
+        const calcScore = Math.round((correctCount / totalQuestions) * 100);
+        
+        const scoreElem = document.getElementById('final-score');
+        scoreElem.innerText = `${calcScore} 점`;
+        // 점수에 따라 색상 변경
+        scoreElem.style.color = calcScore >= 80 ? '#4ade80' : (calcScore >= 50 ? '#facc15' : '#ef4444');
+
+        // 오답 리스트 표시
+        const wrongList = document.getElementById('wrong-list');
+        wrongList.innerHTML = '';
+        
+        if (!data.wrong_answers || data.wrong_answers.length === 0) {
+            wrongList.innerHTML = '<li style="color: #4ade80;">축하합니다! 모든 문제를 맞혔습니다.</li>';
+            return;
+        }
+
+        data.wrong_answers.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'wrong-item';
+            li.innerHTML = `
+                <strong>${item.num}번 문제</strong> (내 답: ${item.user_answer} / 정답: ${item.correct_answer})
+                <span>💡 AI 분석: ${item.reason}</span>
+            `;
+            wrongList.appendChild(li);
+        });
+    }
+
+    // Gemini API 공통 호출 함수 (키를 파라미터로 받음)
+    async function callGeminiAPI(textPrompt, base64Img, currentApiKey) {
+        const requestBody = {
+            contents: [{
+                parts: [
+                    { text: textPrompt },
+                    { inline_data: { mime_type: "image/jpeg", data: base64Img } }
+                ]
+            }]
+        };
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${currentApiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            throw new Error(`API 오류: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.candidates[0].content.parts[0].text;
+    }
+
+    // AI가 마크다운(```json ... ```)을 포함해 답변할 경우를 대비한 JSON 파싱 안전 함수
+    function parseJSON(text) {
+        try {
+            let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+            return JSON.parse(cleanText);
+        } catch (e) {
+            console.error("JSON 파싱 에러:", text);
+            return null;
+        }
+    }
+</script>
+
+</body>
+</html>
